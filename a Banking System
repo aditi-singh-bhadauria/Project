@@ -1,0 +1,314 @@
+"""
+banking_app.py
+A simple banking system GUI using Python and Tkinter.
+Features: create account, view details, deposit, withdraw, transfer, list accounts,
+and persistent storage to bank_data.json.
+"""
+
+import tkinter as tk
+from tkinter import messagebox, ttk
+import json
+import os
+import uuid
+from decimal import Decimal, InvalidOperation
+
+DATA_FILE = "bank_data.json"
+
+
+# ---------- Model ----------
+class Account:
+    def __init__(self, acc_id: str, name: str, balance: Decimal):
+        self.id = acc_id
+        self.name = name
+        self.balance = Decimal(balance)
+
+    def to_dict(self):
+        return {"id": self.id, "name": self.name, "balance": str(self.balance)}
+
+    @staticmethod
+    def from_dict(d):
+        return Account(d["id"], d["name"], Decimal(d["balance"]))
+
+
+class Bank:
+    def __init__(self):
+        self.accounts = {}  # id -> Account
+        self.load()
+
+    def create_account(self, name: str, initial_deposit: Decimal) -> Account:
+        acc_id = str(uuid.uuid4())[:8]
+        account = Account(acc_id, name, initial_deposit)
+        self.accounts[acc_id] = account
+        self.save()
+        return account
+
+    def get_account(self, acc_id: str) -> Account | None:
+        return self.accounts.get(acc_id)
+
+    def find_accounts_by_name(self, name_part: str):
+        return [acc for acc in self.accounts.values() if name_part.lower() in acc.name.lower()]
+
+    def deposit(self, acc_id: str, amount: Decimal):
+        acc = self.get_account(acc_id)
+        if not acc:
+            raise ValueError("Account not found.")
+        if amount <= 0:
+            raise ValueError("Deposit must be positive.")
+        acc.balance += amount
+        self.save()
+
+    def withdraw(self, acc_id: str, amount: Decimal):
+        acc = self.get_account(acc_id)
+        if not acc:
+            raise ValueError("Account not found.")
+        if amount <= 0:
+            raise ValueError("Withdrawal must be positive.")
+        if acc.balance < amount:
+            raise ValueError("Insufficient funds.")
+        acc.balance -= amount
+        self.save()
+
+    def transfer(self, from_id: str, to_id: str, amount: Decimal):
+        if from_id == to_id:
+            raise ValueError("Cannot transfer to same account.")
+        self.withdraw(from_id, amount)
+        self.deposit(to_id, amount)
+        self.save()
+
+    def all_accounts(self):
+        return list(self.accounts.values())
+
+    def save(self):
+        data = [acc.to_dict() for acc in self.accounts.values()]
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def load(self):
+        if not os.path.exists(DATA_FILE):
+            return
+        try:
+            with open(DATA_FILE, "r") as f:
+                data = json.load(f)
+            for d in data:
+                acc = Account.from_dict(d)
+                self.accounts[acc.id] = acc
+        except Exception:
+            # ignore corrupt file; start fresh
+            self.accounts = {}
+
+
+# ---------- GUI ----------
+class BankingApp(tk.Tk):
+    def __init__(self, bank: Bank):
+        super().__init__()
+        self.bank = bank
+        self.title("Simple Banking System")
+        self.geometry("820x520")
+        self.resizable(False, False)
+
+        self.style = ttk.Style(self)
+        # main layout: left pane (controls), right pane (list & details)
+        self.left = ttk.Frame(self, padding=12)
+        self.left.pack(side=tk.LEFT, fill=tk.Y)
+
+        self.right = ttk.Frame(self, padding=12)
+        self.right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        self._build_left()
+        self._build_right()
+        self.refresh_account_list()
+
+    def _build_left(self):
+        # --- Create Account ---
+        create_label = ttk.Label(self.left, text="Create Account", font=("TkDefaultFont", 12, "bold"))
+        create_label.pack(anchor=tk.W, pady=(0, 6))
+
+        ttk.Label(self.left, text="Full name:").pack(anchor=tk.W)
+        self.name_entry = ttk.Entry(self.left, width=28)
+        self.name_entry.pack(pady=(0, 6))
+
+        ttk.Label(self.left, text="Initial deposit:").pack(anchor=tk.W)
+        self.deposit_entry = ttk.Entry(self.left, width=28)
+        self.deposit_entry.pack(pady=(0, 6))
+
+        ttk.Button(self.left, text="Create Account", command=self.create_account_action).pack(pady=(4, 12))
+
+        # --- Account Operations ---
+        op_label = ttk.Label(self.left, text="Account Operations", font=("TkDefaultFont", 12, "bold"))
+        op_label.pack(anchor=tk.W, pady=(6, 6))
+
+        ttk.Label(self.left, text="Account ID:").pack(anchor=tk.W)
+        self.op_acc_id = ttk.Entry(self.left, width=28)
+        self.op_acc_id.pack(pady=(0, 6))
+
+        ttk.Label(self.left, text="Amount:").pack(anchor=tk.W)
+        self.op_amount = ttk.Entry(self.left, width=28)
+        self.op_amount.pack(pady=(0, 6))
+
+        btn_frame = ttk.Frame(self.left)
+        btn_frame.pack(pady=(4, 6))
+        ttk.Button(btn_frame, text="Deposit", command=self.deposit_action).grid(row=0, column=0, padx=4)
+        ttk.Button(btn_frame, text="Withdraw", command=self.withdraw_action).grid(row=0, column=1, padx=4)
+        ttk.Button(btn_frame, text="Refresh", command=self.refresh_account_list).grid(row=0, column=2, padx=4)
+
+        # --- Transfer ---
+        transfer_label = ttk.Label(self.left, text="Transfer", font=("TkDefaultFont", 12, "bold"))
+        transfer_label.pack(anchor=tk.W, pady=(8, 6))
+
+        ttk.Label(self.left, text="From Account ID:").pack(anchor=tk.W)
+        self.from_acc = ttk.Entry(self.left, width=28)
+        self.from_acc.pack(pady=(0, 6))
+
+        ttk.Label(self.left, text="To Account ID:").pack(anchor=tk.W)
+        self.to_acc = ttk.Entry(self.left, width=28)
+        self.to_acc.pack(pady=(0, 6))
+
+        ttk.Label(self.left, text="Amount:").pack(anchor=tk.W)
+        self.transfer_amount = ttk.Entry(self.left, width=28)
+        self.transfer_amount.pack(pady=(0, 6))
+
+        ttk.Button(self.left, text="Transfer", command=self.transfer_action).pack(pady=(6, 8))
+
+        # --- Search ---
+        search_label = ttk.Label(self.left, text="Search by name", font=("TkDefaultFont", 12, "bold"))
+        search_label.pack(anchor=tk.W, pady=(6, 6))
+        self.search_entry = ttk.Entry(self.left, width=28)
+        self.search_entry.pack()
+        ttk.Button(self.left, text="Search", command=self.search_action).pack(pady=(6, 2))
+        ttk.Button(self.left, text="Show All", command=self.refresh_account_list).pack()
+
+    def _build_right(self):
+        # Table of accounts
+        cols = ("id", "name", "balance")
+        self.tree = ttk.Treeview(self.right, columns=cols, show="headings", height=18)
+        self.tree.heading("id", text="Account ID")
+        self.tree.heading("name", text="Name")
+        self.tree.heading("balance", text="Balance")
+        self.tree.column("id", width=140)
+        self.tree.column("name", width=300)
+        self.tree.column("balance", width=120, anchor=tk.E)
+        self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+
+        # Details panel
+        details = ttk.LabelFrame(self.right, text="Account Details", padding=10)
+        details.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+
+        self.detail_id = ttk.Label(details, text="ID: ")
+        self.detail_id.pack(anchor=tk.W)
+        self.detail_name = ttk.Label(details, text="Name: ")
+        self.detail_name.pack(anchor=tk.W)
+        self.detail_balance = ttk.Label(details, text="Balance: ")
+        self.detail_balance.pack(anchor=tk.W)
+
+    # ---------- Actions ----------
+    def create_account_action(self):
+        name = self.name_entry.get().strip()
+        amt_str = self.deposit_entry.get().strip() or "0"
+        if not name:
+            messagebox.showwarning("Input Error", "Please enter a name.")
+            return
+        try:
+            amt = Decimal(amt_str)
+        except InvalidOperation:
+            messagebox.showwarning("Input Error", "Invalid deposit amount.")
+            return
+        if amt < 0:
+            messagebox.showwarning("Input Error", "Initial deposit cannot be negative.")
+            return
+        acc = self.bank.create_account(name, amt)
+        messagebox.showinfo("Account Created", f"Account created!\nID: {acc.id}\nName: {acc.name}\nBalance: {acc.balance}")
+        self.name_entry.delete(0, tk.END)
+        self.deposit_entry.delete(0, tk.END)
+        self.refresh_account_list()
+
+    def deposit_action(self):
+        acc_id = self.op_acc_id.get().strip()
+        amt_str = self.op_amount.get().strip()
+        if not acc_id or not amt_str:
+            messagebox.showwarning("Input Error", "Enter account ID and amount.")
+            return
+        try:
+            amt = Decimal(amt_str)
+            self.bank.deposit(acc_id, amt)
+            messagebox.showinfo("Success", f"Deposited {amt} to {acc_id}")
+            self.op_amount.delete(0, tk.END)
+            self.refresh_account_list()
+        except InvalidOperation:
+            messagebox.showwarning("Input Error", "Invalid amount.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def withdraw_action(self):
+        acc_id = self.op_acc_id.get().strip()
+        amt_str = self.op_amount.get().strip()
+        if not acc_id or not amt_str:
+            messagebox.showwarning("Input Error", "Enter account ID and amount.")
+            return
+        try:
+            amt = Decimal(amt_str)
+            self.bank.withdraw(acc_id, amt)
+            messagebox.showinfo("Success", f"Withdrew {amt} from {acc_id}")
+            self.op_amount.delete(0, tk.END)
+            self.refresh_account_list()
+        except InvalidOperation:
+            messagebox.showwarning("Input Error", "Invalid amount.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def transfer_action(self):
+        from_id = self.from_acc.get().strip()
+        to_id = self.to_acc.get().strip()
+        amt_str = self.transfer_amount.get().strip()
+        if not from_id or not to_id or not amt_str:
+            messagebox.showwarning("Input Error", "Enter all transfer fields.")
+            return
+        try:
+            amt = Decimal(amt_str)
+            self.bank.transfer(from_id, to_id, amt)
+            messagebox.showinfo("Success", f"Transferred {amt} from {from_id} to {to_id}")
+            self.from_acc.delete(0, tk.END)
+            self.to_acc.delete(0, tk.END)
+            self.transfer_amount.delete(0, tk.END)
+            self.refresh_account_list()
+        except InvalidOperation:
+            messagebox.showwarning("Input Error", "Invalid amount.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def search_action(self):
+        term = self.search_entry.get().strip()
+        if not term:
+            self.refresh_account_list()
+            return
+        results = self.bank.find_accounts_by_name(term)
+        self._populate_tree(results)
+
+    def refresh_account_list(self):
+        self._populate_tree(self.bank.all_accounts())
+
+    def _populate_tree(self, accounts):
+        # clear
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        for acc in accounts:
+            self.tree.insert("", tk.END, values=(acc.id, acc.name, f"{acc.balance:.2f}"))
+
+    def on_tree_select(self, event):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        item = self.tree.item(sel[0])
+        acc_id = item["values"][0]
+        acc = self.bank.get_account(acc_id)
+        if acc:
+            self.detail_id.config(text=f"ID: {acc.id}")
+            self.detail_name.config(text=f"Name: {acc.name}")
+            self.detail_balance.config(text=f"Balance: {acc.balance:.2f}")
+
+# ---------- Run ----------
+if __name__ == "__main__":
+    bank = Bank()
+    app = BankingApp(bank)
+    app.mainloop()
